@@ -1,0 +1,21 @@
+[project]
+name = "seamstress"
+version = "0.1.0"
+description = "Seamstress productivity MVP"
+authors = [{name = "Seamstress"}]
+dependencies = [
+  "typer[all]",
+  "rich",
+  "pandas",
+  "matplotlib",
+  "PyYAML",
+  "pynput",
+  "opencv-python",
+  "google-api-python-client",
+  "google-auth-oauthlib",
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+seamstress = "seamstress.cli:run"
