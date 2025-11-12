@@ -1,0 +1,82 @@
+barges:
+  - name: Bayesian Project
+    description: Researching probabilistic models with Susy
+    expected_landfall: 2023-12-15T17:00:00
+    threads:
+      - name: Literature Review
+        description: Review papers for Raviv's project and annotate findings
+        urgency_level: 3
+        related_projects:
+          - Bayesian Project
+        tasks:
+          - Review papers for Raviv’s project
+          - Do two practice presentations with bullet notes and key ideas
+      - name: Meeting Cadence
+        description: Maintain weekly syncs with stakeholders
+        urgency_level: 2
+        related_projects:
+          - Bayesian Project
+        tasks:
+          - Set up another meeting with Susy
+  - name: Computer Vision Project
+    description: Vision-language experiments and evaluation
+    expected_landfall: 2024-01-20T18:00:00
+    threads:
+      - name: MF-CLIP Analysis
+        description: Continue work on t-SNE plots and evaluation metrics
+        urgency_level: 3
+        related_projects:
+          - Computer Vision Project
+          - LLM Project
+        tasks:
+          - Work on t-SNE plots (esp. MF-CLIP) and LLM project in parallel
+  - name: LLM Project
+    description: Local LLM experimentation and hackathon prep
+    expected_landfall: 2024-02-01T18:00:00
+    threads:
+      - name: Hackathon Prep
+        description: Coordinate with Kevin and schedule practice sessions
+        urgency_level: 2
+        related_projects:
+          - LLM Project
+        tasks:
+          - Prep for hackathon; check if Kevin got in
+          - 30-min morning and evening planning blocks to transition, plan week, and message Susy, Kevin (re: hackathon)
+  - name: Information Theory Paper
+    description: Drafting deliverable for information theory course
+    expected_landfall: 2023-12-01T23:59:00
+    threads:
+      - name: Draft Production
+        description: Iterate on slides and daily review for fluency
+        urgency_level: 3
+        related_projects:
+          - Information Theory paper
+        tasks:
+          - Go over Information Theory slides daily to build fluency
+  - name: Coursework and Administration
+    description: Exam preparation and university logistics
+    expected_landfall: 2023-11-30T12:00:00
+    threads:
+      - name: Data Mining Exam
+        description: Prepare for Exam 2 with spaced repetition
+        urgency_level: 2
+        related_projects:
+          - Data Mining Exam 2
+        tasks:
+          - Data Mining Exam 2
+      - name: Registration and Advising
+        description: Ensure spring schedule and research advising are aligned
+        urgency_level: 1
+        related_projects:
+          - General coursework and school responsibilities
+        tasks:
+          - Check class registration (11/11 7:30 a.m.) — figure this out over the weekend
+          - Contact Sean Thoma about potential research advising
+      - name: Foundations Thread
+        description: Linear algebra refresh and math fluency
+        urgency_level: 2
+        related_projects:
+          - Linear algebra and foundational math learning
+        tasks:
+          - Linear algebra and foundational math learning
+          - General coursework and school responsibilities
