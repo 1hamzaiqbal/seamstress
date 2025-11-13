@@ -1,0 +1,462 @@
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,28 @@
++[project.optional-dependencies]
++viz = ["matplotlib>=3.7"]
++vision = ["opencv-python>=4.8.0","pynput>=1.7.6"]
++calendar = ["google-api-python-client","google-auth-oauthlib","ics>=0.7"]
++gui = ["streamlit>=1.29","pandas>=2.1"]
++
++[tool.seamstress]
++# Default locations used by new commands (can be overridden by flags)
++ics_path = "~/.seamstress/calendar.ics"
++focus_csv = "~/.seamstress/focus.csv"
++artifacts_dir = "artifacts"
++
++
+diff --git a/seamstress/calendar_ics.py b/seamstress/calendar_ics.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/calendar_ics.py
+@@ -0,0 +1,132 @@
++from __future__ import annotations
++from dataclasses import dataclass
++from datetime import datetime
++from pathlib import Path
++from typing import List, Optional
++
++@dataclass
++class IcsEvent:
++    summary: str
++    start: datetime
++    end: datetime
++    location: str = ""
++    uid: str = ""
++
++def _parse_dt(s: str) -> datetime:
++    # supports 20241107T140000Z and 20241107T140000
++    fmt = "%Y%m%dT%H%M%SZ" if s.endswith("Z") else "%Y%m%dT%H%M%S"
++    return datetime.strptime(s, fmt)
++
++def _fallback_parse_ics(path: Path) -> List[IcsEvent]:
++    lines = [ln.strip() for ln in Path(path).read_text().splitlines()]
++    out: List[IcsEvent] = []
++    rec: dict[str,str] = {}
++    in_event = False
++    for ln in lines:
++        if ln == "BEGIN:VEVENT":
++            in_event, rec = True, {}
++            continue
++        if ln == "END:VEVENT" and in_event:
++            in_event = False
++            out.append(IcsEvent(
++                summary=rec.get("SUMMARY",""),
++                start=_parse_dt(rec["DTSTART"]),
++                end=_parse_dt(rec["DTEND"]),
++                location=rec.get("LOCATION",""),
++                uid=rec.get("UID",""),
++            ))
++            rec = {}
++            continue
++        if in_event and ":" in ln:
++            k,v = ln.split(":",1)
++            rec[k] = v
++    return out
++
++def import_ics(path: Path) -> List[IcsEvent]:
++    """Robust ICS import. Uses `ics` if present, else a tiny fallback parser."""
++    try:
++        from ics import Calendar  # type: ignore
++        cal = Calendar(Path(path).read_text())
++        events: List[IcsEvent] = []
++        for ev in cal.events:
++            start = ev.begin.datetime
++            end = ev.end.datetime
++            events.append(IcsEvent(
++                summary = ev.name or "(untitled)",
++                start = start,
++                end = end,
++                location = getattr(ev, "location", "") or "",
++                uid = getattr(ev, "uid", "") or "",
++            ))
++        return sorted(events, key=lambda e: e.start)
++    except Exception:
++        return sorted(_fallback_parse_ics(path), key=lambda e: e.start)
++
+diff --git a/seamstress/focus_offline.py b/seamstress/focus_offline.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/focus_offline.py
+@@ -0,0 +1,95 @@
++from __future__ import annotations
++import csv
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from pathlib import Path
++from typing import List
++
++@dataclass
++class Sample:
++    t: datetime
++    keys: int
++    webcam: float
++    @property
++    def score(self)->float:
++        return 0.7*min(self.keys/60,1.0) + 0.3*max(0.0,min(self.webcam,1.0))
++
++@dataclass
++class BreakHint:
++    start: datetime
++    end: datetime
++    reason: str
++
++def load_csv(path: Path) -> List[Sample]:
++    rows: List[Sample] = []
++    with Path(path).open() as fh:
++        r = csv.DictReader(fh)
++        for row in r:
++            rows.append(Sample(
++                t=datetime.fromisoformat(row["timestamp"]),
++                keys=int(row["keystrokes"]),
++                webcam=float(row.get("webcam_focus",0.0)),
++            ))
++    return rows
++
++def analyze(samples: List[Sample],
++            sustained_min: int = 40,
++            low_win_min: int = 8,
++            thresh: float = 0.45) -> List[BreakHint]:
++    out: List[BreakHint] = []
++    if not samples: return out
++    session_start = samples[0].t
++    win: List[Sample] = []
++    for s in samples:
++        win.append(s)
++        # keep last low_win_min worth of samples (assume ~5min cadence typical)
++        while len(win)>=2 and (s.t - win[0].t) >= timedelta(minutes=low_win_min):
++            win.pop(0)
++        if (s.t - session_start) >= timedelta(minutes=sustained_min):
++            avg = sum(x.score for x in win)/len(win) if win else 1.0
++            if avg < thresh:
++                out.append(BreakHint(start=win[0].t, end=s.t,
++                          reason=f"low focus {low_win_min}m window (avg={avg:.2f})"))
++                session_start = s.t
++                win = [s]
++    return out
++
+diff --git a/seamstress/timecapsule.py b/seamstress/timecapsule.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/timecapsule.py
+@@ -0,0 +1,84 @@
++from __future__ import annotations
++import platform, subprocess, shlex
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Iterable, List, Optional
++from .storage import load_state, save_state
++from .data_models import TimeCapsule  # V3 already has this type
++
++@dataclass
++class Probe:
++    description: str
++    command: List[str]
++
++def suggest_macos_probes()->List[Probe]:
++    return [
++        Probe("Safari tabs",
++              ["osascript","-e",'tell application "Safari" to get URL of every tab of every window']),
++        Probe("VSCode workspaces",
++              ["osascript","-e",'tell application "Visual Studio Code" to get path of every workspace folder']),
++    ]
++
++def run_probe(cmd: List[str])->Optional[str]:
++    try:
++        out = subprocess.run(cmd, capture_output=True, check=False)
++        if out.returncode==0:
++            return out.stdout.decode("utf-8").strip()
++    except Exception:
++        return None
++    return None
++
++def create_time_capsule(project: str,
++                        summary: str,
++                        resources: Iterable[str] = (),
++                        include_probes: bool = True)->TimeCapsule:
++    extra: List[str] = []
++    if include_probes and platform.system()=="Darwin":
++        for p in suggest_macos_probes():
++            res = run_probe(p.command)
++            if res:
++                extra.append(f"{p.description}: {res}")
++    capsule = TimeCapsule(
++        project=project,
++        created_at=datetime.utcnow(),
++        summary=summary,
++        open_resources=list(resources)+extra,
++    )
++    state = load_state()
++    state.add_time_capsule(capsule)
++    save_state(state)
++    return capsule
++
+diff --git a/seamstress/app_streamlit/__init__.py b/seamstress/app_streamlit/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/app_streamlit/__init__.py
+@@ -0,0 +1 @@
++# package marker
+diff --git a/seamstress/app_streamlit/dashboard.py b/seamstress/app_streamlit/dashboard.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/app_streamlit/dashboard.py
+@@ -0,0 +1,147 @@
++from __future__ import annotations
++from datetime import datetime, timedelta
++from pathlib import Path
++import pandas as pd
++import streamlit as st
++from ..storage import load_state
++from ..calendar_ics import import_ics
++
++st.set_page_config(page_title="Seamstress", layout="wide")
++
++def _project_df(state):
++    rows = []
++    for name, goal in state.projects.items():
++        rows.append({
++            "Project": name,
++            "Weekly target (h)": goal.weekly_target_hours,
++        })
++    return pd.DataFrame(rows)
++
++def _capsules_df(state):
++    rows=[]
++    for c in state.time_capsules:
++        rows.append({"Project": c.project, "When": c.created_at, "Summary": c.summary})
++    return pd.DataFrame(rows).sort_values("When", ascending=False)
++
++def _ics_df(ics_path: Path|None):
++    if not ics_path or not ics_path.exists():
++        return pd.DataFrame()
++    ev = import_ics(ics_path)
++    return pd.DataFrame([{
++        "Title": e.summary, "Start": e.start, "End": e.end, "Location": e.location
++    } for e in ev])
++
++def main():
++    st.title("Seamstress Control Board")
++    state = load_state()
++    left, right = st.columns([2,1])
++    with left:
++        st.subheader("Projects")
++        st.dataframe(_project_df(state), hide_index=True)
++        st.subheader("Time Capsules")
++        st.dataframe(_capsules_df(state), hide_index=True)
++    with right:
++        st.subheader("Calendar (ICS)")
++        ics_path = st.text_input("ICS path", value=str(Path("~/.seamstress/calendar.ics").expanduser()))
++        if st.button("Load ICS"):
++            df = _ics_df(Path(ics_path).expanduser())
++            if df.empty:
++                st.info("No events loaded.")
++            else:
++                st.dataframe(df, hide_index=True, height=320)
++
++if __name__ == "__main__":
++    main()
++
+diff --git a/seamstress/schedule_daily.py b/seamstress/schedule_daily.py
+new file mode 100644
+--- /dev/null
++++ b/seamstress/schedule_daily.py
+@@ -0,0 +1,122 @@
++from __future__ import annotations
++from dataclasses import dataclass
++from datetime import datetime, timedelta
++from typing import Iterable, List, Dict
++
++BLOCK = timedelta(hours=2)
++RITUAL = timedelta(minutes=30)
++
++@dataclass
++class Block:
++    start: datetime
++    end: datetime
++    label: str
++    source: str  # "thread","routine","calendar","buffer"
++
++def build_simple_schedule(
++    day_start: datetime,
++    projects: Iterable[str],
++    events: Iterable[tuple[datetime, datetime, str]],
++    focus_blocks: int = 3,
++) -> List[Block]:
++    """Round-robin 2h blocks across projects, with 30m morning/evening rituals and calendar overlay."""
++    cur = day_start
++    out: List[Block] = []
++    # Morning ritual
++    out.append(Block(start=cur, end=cur+RITUAL, label="Morning planning", source="routine"))
++    cur += RITUAL
++    # Main focus blocks
++    projects = list(projects) or ["General"]
++    for i in range(focus_blocks):
++        p = projects[i % len(projects)]
++        out.append(Block(start=cur, end=cur+BLOCK, label=f"{p} — 2h sprint", source="thread"))
++        cur += BLOCK
++    # Insert calendar events that overlap [day_start, last_block_end]
++    last_end = cur
++    for (s,e,title) in sorted(events, key=lambda x: x[0]):
++        if e <= day_start or s >= last_end:
++            continue
++        # buffer before event if it splits a work block region
++        if out and out[-1].end < s and out[-1].source!="routine":
++            out.append(Block(start=out[-1].end, end=s, label="Buffer / transit", source="buffer"))
++        out.append(Block(start=max(s,day_start), end=min(e,last_end), label=title, source="calendar"))
++    # Evening ritual
++    out.append(Block(start=cur, end=cur+RITUAL, label="Evening planning", source="routine"))
++    return out
++
+diff --git a/seamstress/cli.py b/seamstress/cli.py
+--- a/seamstress/cli.py
++++ b/seamstress/cli.py
+@@ -1,0 +1,175 @@
++# Additions to existing Typer CLI (V3). We keep existing commands and append new ones.
++from __future__ import annotations
++from pathlib import Path
++from datetime import datetime
++import json, os, subprocess
++import typer
++from rich.console import Console
++from rich.panel import Panel
++
++from .calendar_ics import import_ics
++from .focus_offline import load_csv, analyze
++from .schedule_daily import build_simple_schedule
++from .storage import load_state
++
++console = Console()
++app = typer.Typer(help="Seamstress productivity companion", add_completion=False)
++
++CONFIG = Path.home()/".seamstress"/"config.json"
++
++def _get_cfg()->dict:
++    if CONFIG.exists():
++        return json.loads(CONFIG.read_text())
++    return {}
++def _set_cfg(d: dict)->None:
++    CONFIG.parent.mkdir(parents=True, exist_ok=True)
++    CONFIG.write_text(json.dumps(d, indent=2))
++
++@app.command("calendar-import-ics")
++def calendar_import_ics(ics_path: Path):
++    """Import and cache a path to an ICS file (no OAuth)."""
++    if not ics_path.exists():
++        console.print(f"[red]Not found:[/red] {ics_path}")
++        raise typer.Exit(1)
++    cfg = _get_cfg()
++    cfg["ics_path"] = str(ics_path.expanduser())
++    _set_cfg(cfg)
++    ev = import_ics(ics_path)
++    console.print(Panel(f"Registered ICS: {ics_path}\nEvents loaded: {len(ev)}", title="Calendar"))
++
++@app.command("visualize-daily")
++def visualize_daily(start: str = typer.Option(..., help="ISO start, e.g. 2025-11-11T09:00"),
++                    focus_blocks: int = 3,
++                    ics_path: Path|None = None,
++                    out: Path = Path("artifacts/daily.png")):
++    """Build a simple 2h‑sprint day with rituals and overlay ICS events. Exports a PNG timeline."""
++    try:
++        import matplotlib.pyplot as plt
++    except Exception:
++        console.print("[red]matplotlib not installed. pip install -e .[viz][/red]")
++        raise typer.Exit(1)
++    start_dt = datetime.fromisoformat(start)
++    state = load_state()
++    projects = list(state.projects.keys()) or ["General"]
++    path = ics_path or Path((_get_cfg().get("ics_path") or "~/.seamstress/calendar.ics")).expanduser()
++    events_raw = []
++    if path.exists():
++        for e in import_ics(path):
++            events_raw.append((e.start, e.end, e.summary))
++    blocks = build_simple_schedule(start_dt, projects, events_raw, focus_blocks)
++    # draw
++    out.parent.mkdir(parents=True, exist_ok=True)
++    fig, ax = plt.subplots(figsize=(11, 3))
++    base = blocks[0].start
++    color = {"thread":"#4C72B0","routine":"#55A868","calendar":"#C44E52","buffer":"#8172B3"}
++    for b in blocks:
++        left = (b.start-base).total_seconds()/3600
++        w = (b.end-b.start).total_seconds()/3600
++        ax.barh([0],[w], left=left, height=0.35, color=color.get(b.source,"#999"), edgecolor="black")
++        ax.text(left+w/2,0,b.label,ha="center",va="center",fontsize=8,color="white" if b.source!="routine" else "black")
++    ax.set_xlabel("Hours from start"); ax.set_yticks([]); ax.set_title(start_dt.strftime("Seamstress — daily plan"))
++    fig.tight_layout(); fig.savefig(out); plt.close(fig)
++    console.print(Panel(f"Saved {out}", title="Daily visualization", border_style="green"))
++
++@app.command("focus-analyze")
++def focus_analyze(csv_path: Path):
++    """Offline analysis of focus CSV (timestamp, keystrokes, webcam_focus). Emits break suggestions."""
++    if not csv_path.exists():
++        console.print(f"[red]Not found:[/red] {csv_path}")
++        raise typer.Exit(1)
++    samples = load_csv(csv_path)
++    hints = analyze(samples)
++    if not hints:
++        console.print("No break suggestions.")
++        return
++    for h in hints:
++        console.print(f"{h.start:%H:%M}–{h.end:%H:%M} | {h.reason}")
++
++@app.command("streamlit")
++def streamlit_dashboard():
++    """Launch the local Streamlit dashboard (no cloud deps)."""
++    import importlib.util, sys
++    if importlib.util.find_spec("streamlit") is None:
++        console.print("[red]streamlit not installed. pip install -e .[gui][/red]")
++        raise typer.Exit(1)
++    mod = Path(__file__).parent/"app_streamlit"/"dashboard.py"
++    subprocess.run(["streamlit","run", str(mod)], check=False)
++
+diff --git a/data/samples/sample_calendar.ics b/data/samples/sample_calendar.ics
+new file mode 100644
+--- /dev/null
++++ b/data/samples/sample_calendar.ics
+@@ -0,0 +1,24 @@
++BEGIN:VCALENDAR
++VERSION:2.0
++PRODID:-//Seamstress Demo//EN
++BEGIN:VEVENT
++UID:1@example.com
++DTSTAMP:20250111T130000Z
++DTSTART:20250111T140000Z
++DTEND:20250111T150000Z
++SUMMARY:Meeting with Susy
++LOCATION:Zoom
++END:VEVENT
++BEGIN:VEVENT
++UID:2@example.com
++DTSTAMP:20250111T150000Z
++DTSTART:20250111T160000Z
++DTEND:20250111T170000Z
++SUMMARY:Hackathon sync with Kevin
++LOCATION:Campus Lab
++END:VEVENT
++END:VCALENDAR
+diff --git a/data/samples/focus.csv b/data/samples/focus.csv
+new file mode 100644
+--- /dev/null
++++ b/data/samples/focus.csv
+@@ -0,0 +1,10 @@
++timestamp,keystrokes,webcam_focus
++2025-11-11T09:00:00,50,0.8
++2025-11-11T09:10:00,55,0.7
++2025-11-11T09:20:00,60,0.75
++2025-11-11T09:30:00,25,0.40
++2025-11-11T09:40:00,18,0.35
++2025-11-11T09:50:00,15,0.30
++2025-11-11T10:00:00,65,0.80
++2025-11-11T10:10:00,62,0.78
++2025-11-11T10:20:00,60,0.76

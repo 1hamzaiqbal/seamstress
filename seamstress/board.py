@@ -31,13 +31,23 @@ def load_threads_from_yaml(path: Path = DEFAULT_THREADS_FILE) -> List[Barge]:
                 description=thread_data.get("description", ""),
                 urgency_level=thread_data.get("urgency_level", 1),
                 related_projects=thread_data.get("related_projects", []),
-                tasks=thread_data.get("tasks", []),
+                tasks=[
+                    item
+                    if isinstance(item, str)
+                    else " ".join(f"{key}: {value}" for key, value in item.items())
+                    if isinstance(item, dict)
+                    else str(item)
+                    for item in thread_data.get("tasks", [])
+                ],
             )
             for thread_data in barge_data.get("threads", [])
         ]
         expected = None
         if deadline := barge_data.get("expected_landfall"):
-            expected = datetime.fromisoformat(deadline)
+            if isinstance(deadline, datetime):
+                expected = deadline
+            else:
+                expected = datetime.fromisoformat(str(deadline))
         barges.append(
             Barge(
                 name=barge_data["name"],

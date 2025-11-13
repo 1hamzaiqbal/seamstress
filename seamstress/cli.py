@@ -1,6 +1,8 @@
 """Command line interface for the Seamstress MVP."""
 from __future__ import annotations
 
+import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -10,15 +12,31 @@ from rich.console import Console
 from rich.panel import Panel
 
 from . import board
+from .calendar_ics import import_ics
 from .calendar_sync import CalendarUnavailableError, fetch_upcoming_events, render_calendar_table
 from .focus import run_focus_session
+from .focus_offline import analyze, load_csv
 from .local_models import LocalModelUnavailable, generate_summary_with_ollama, save_summary
-from .storage import load_state, save_state
-from .data_models import TimeCapsule
+from .schedule_daily import build_simple_schedule
+from .storage import load_state
+from .timecapsule import create_time_capsule
 from .visualization import generate_two_hour_block_plan, plot_weekly_blocks, render_block_plan
 
-app = typer.Typer(help="Seamstress productivity companion")
+app = typer.Typer(help="Seamstress productivity companion", add_completion=False)
 console = Console()
+
+CONFIG = Path.home() / ".seamstress" / "config.json"
+
+
+def _get_cfg() -> dict:
+    if CONFIG.exists():
+        return json.loads(CONFIG.read_text())
+    return {}
+
+
+def _set_cfg(data: dict) -> None:
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(json.dumps(data, indent=2))
 
 
 @app.command()
@@ -64,6 +82,73 @@ def visualize(output: Path = typer.Option(Path("artifacts/weekly_focus.png"))) -
     plot_weekly_blocks(output)
 
 
+@app.command("visualize-daily")
+def visualize_daily(
+    start: str = typer.Option(..., help="ISO start, e.g. 2025-11-11T09:00"),
+    focus_blocks: int = typer.Option(3, help="Number of 2-hour focus blocks"),
+    ics_path: Path | None = typer.Option(None, help="Optional path to an ICS file for overlay"),
+    out: Path = typer.Option(Path("artifacts/daily.png"), help="Output image path"),
+) -> None:
+    """Build a simple day plan with rituals and overlay ICS events."""
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        console.print("[red]matplotlib not installed. pip install -e .[viz][/red]")
+        raise typer.Exit(code=1)
+
+    start_dt = datetime.fromisoformat(start)
+    state = load_state()
+    projects = list(state.projects.keys()) or ["General"]
+
+    cfg_path = _get_cfg().get("ics_path") or "~/.seamstress/calendar.ics"
+    selected_path = (ics_path or Path(cfg_path)).expanduser()
+
+    events_raw: List[tuple[datetime, datetime, str]] = []
+    if selected_path.exists():
+        for event in import_ics(selected_path):
+            events_raw.append((event.start, event.end, event.summary))
+
+    blocks = build_simple_schedule(start_dt, projects, events_raw, focus_blocks)
+    if not blocks:
+        console.print("[yellow]No schedule blocks generated.[/yellow]")
+        return
+
+    output_path = out.expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base = blocks[0].start
+    colors = {"thread": "#4C72B0", "routine": "#55A868", "calendar": "#C44E52", "buffer": "#8172B3"}
+
+    fig, ax = plt.subplots(figsize=(11, 3))
+    for block in blocks:
+        left = (block.start - base).total_seconds() / 3600
+        width = (block.end - block.start).total_seconds() / 3600
+        ax.barh(
+            [0],
+            [width],
+            left=left,
+            height=0.35,
+            color=colors.get(block.source, "#999"),
+            edgecolor="black",
+        )
+        ax.text(
+            left + width / 2,
+            0,
+            block.label,
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="white" if block.source != "routine" else "black",
+        )
+    ax.set_xlabel("Hours from start")
+    ax.set_yticks([])
+    ax.set_title(start_dt.strftime("Seamstress — daily plan"))
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    console.print(Panel(f"Saved {output_path}", title="Daily visualization", border_style="green"))
+
+
 @app.command()
 def plan(days: int = typer.Option(5, help="Number of days to schedule")) -> None:
     """Generate a default rotation of 2-hour blocks across active projects."""
@@ -90,6 +175,36 @@ def calendar(horizon: int = typer.Option(7, help="Number of days to sync")) -> N
     console.print(Panel(render_calendar_table(events), title="Upcoming Events"))
 
 
+@app.command("calendar-import-ics")
+def calendar_import_ics(ics_path: Path) -> None:
+    """Import and cache a path to an ICS file (no OAuth required)."""
+    expanded = ics_path.expanduser()
+    if not expanded.exists():
+        console.print(f"[red]Not found:[/red] {expanded}")
+        raise typer.Exit(code=1)
+    cfg = _get_cfg()
+    cfg["ics_path"] = str(expanded)
+    _set_cfg(cfg)
+    events = import_ics(expanded)
+    console.print(Panel(f"Registered ICS: {expanded}\nEvents loaded: {len(events)}", title="Calendar"))
+
+
+@app.command("focus-analyze")
+def focus_analyze(csv_path: Path) -> None:
+    """Offline analysis of focus CSV metrics."""
+    expanded = csv_path.expanduser()
+    if not expanded.exists():
+        console.print(f"[red]Not found:[/red] {expanded}")
+        raise typer.Exit(code=1)
+    samples = load_csv(expanded)
+    hints = analyze(samples)
+    if not hints:
+        console.print("No break suggestions.")
+        return
+    for hint in hints:
+        console.print(f"{hint.start:%H:%M}–{hint.end:%H:%M} | {hint.reason}")
+
+
 @app.command()
 def capsule(
     project: str,
@@ -97,18 +212,30 @@ def capsule(
     resource: List[str] = typer.Option(
         [], "--resource", "-r", help="Paths or links to resources referenced in the capsule"
     ),
+    include_probes: bool = typer.Option(
+        True, "--probes/--no-probes", help="Capture context using macOS probes when available."
+    ),
 ) -> None:
     """Manually create a time capsule entry for a project."""
-    state = load_state()
-    capsule = TimeCapsule(
+    capsule = create_time_capsule(
         project=project,
-        created_at=datetime.utcnow(),
         summary=summary,
-        open_resources=resource,
+        resources=resource,
+        include_probes=include_probes,
     )
-    state.add_time_capsule(capsule)
-    save_state(state)
     console.print(Panel(f"Stored time capsule for {project}", title="Time Capsule", border_style="cyan"))
+
+
+@app.command("streamlit")
+def streamlit_dashboard() -> None:
+    """Launch the local Streamlit dashboard (no cloud dependencies)."""
+    import importlib.util
+
+    if importlib.util.find_spec("streamlit") is None:
+        console.print("[red]streamlit not installed. pip install -e .[gui][/red]")
+        raise typer.Exit(code=1)
+    module_path = Path(__file__).parent / "app_streamlit" / "dashboard.py"
+    subprocess.run(["streamlit", "run", str(module_path)], check=False)
 
 
 @app.command()

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Type, TypeVar
@@ -24,9 +24,10 @@ T = TypeVar("T")
 
 def _encode_dataclass(value: Any) -> Any:
     if is_dataclass(value):
-        return {"__type__": value.__class__.__name__, **{
-            key: _encode_dataclass(item) for key, item in asdict(value).items()
-        }}
+        data: Dict[str, Any] = {"__type__": value.__class__.__name__}
+        for field in fields(value):
+            data[field.name] = _encode_dataclass(getattr(value, field.name))
+        return data
     if isinstance(value, datetime):
         return {"__datetime__": value.strftime(ISO_FORMAT)}
     if isinstance(value, Path):
@@ -49,6 +50,7 @@ def _decode_dataclass(value: Dict[str, Any]) -> Any:
             key: _decode(item) for key, item in value.items()
         }
     mapping: Dict[str, Type[Any]] = {
+        "SeamstressState": SeamstressState,
         "WorkBlock": WorkBlock,
         "ProjectGoal": ProjectGoal,
         "TimeCapsule": TimeCapsule,
@@ -68,6 +70,8 @@ def _decode(value: Any) -> Any:
         return _decode_dataclass(value)
     if isinstance(value, list):
         return [_decode(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _decode(item) for key, item in value.items()}
     return value
 
 
@@ -78,6 +82,8 @@ def load_state(state_path: Path | None = None) -> SeamstressState:
     with path.open("r", encoding="utf-8") as fp:
         payload = json.load(fp)
     data = _decode(payload)
+    if isinstance(data, SeamstressState):
+        return data
     projects = {name: project for name, project in data.get("projects", {}).items()}
     work_blocks = data.get("work_blocks", [])
     time_capsules = data.get("time_capsules", [])

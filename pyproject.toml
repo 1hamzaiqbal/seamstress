@@ -19,3 +19,18 @@ requires-python = ">=3.10"
 
 [project.scripts]
 seamstress = "seamstress.cli:run"
+
+[project.optional-dependencies]
+viz = ["matplotlib>=3.7"]
+vision = ["opencv-python>=4.8.0", "pynput>=1.7.6"]
+calendar = ["google-api-python-client", "google-auth-oauthlib", "ics>=0.7"]
+gui = ["streamlit>=1.29", "pandas>=2.1"]
+
+[tool.seamstress]
+# Default locations used by new commands (can be overridden by flags)
+ics_path = "~/.seamstress/calendar.ics"
+focus_csv = "~/.seamstress/focus.csv"
+artifacts_dir = "artifacts"
+
+[tool.setuptools.packages.find]
+include = ["seamstress*"]
