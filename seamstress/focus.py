@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import threading
 import time
 from collections import deque
@@ -18,6 +19,7 @@ from .data_models import TimeCapsule, WorkBlock
 from .storage import load_state, save_state
 
 console = Console()
+logger = logging.getLogger("seamstress.focus")
 
 
 @dataclass
@@ -173,21 +175,37 @@ class FocusMonitor:
             project=self.project,
             focus_score=self._aggregate_focus_score(),
         )
-        state = load_state()
-        state.add_work_block(block)
-        save_state(state)
+        logger.info(
+            f"Finalizing work block for {self.project}: "
+            f"{block.duration} with score {block.focus_score:.2f}"
+        )
+        try:
+            state = load_state()
+            logger.debug(f"Loaded state: {len(state.work_blocks)} existing blocks")
+            state.add_work_block(block)
+            save_state(state)
+            logger.info(f"Work block saved successfully. Total blocks: {len(state.work_blocks)}")
+        except Exception as e:
+            logger.error(f"Failed to save work block: {e}", exc_info=True)
+            raise
         return block
 
     def create_time_capsule(self, summary: str, resources: Optional[Iterable[str]] = None) -> TimeCapsule:
-        state = load_state()
-        capsule = TimeCapsule(
-            project=self.project,
-            created_at=datetime.utcnow(),
-            summary=summary,
-            open_resources=list(resources or []),
-        )
-        state.add_time_capsule(capsule)
-        save_state(state)
+        logger.info(f"Creating time capsule for {self.project}")
+        try:
+            state = load_state()
+            capsule = TimeCapsule(
+                project=self.project,
+                created_at=datetime.utcnow(),
+                summary=summary,
+                open_resources=list(resources or []),
+            )
+            state.add_time_capsule(capsule)
+            save_state(state)
+            logger.info(f"Time capsule saved. Total capsules: {len(state.time_capsules)}")
+        except Exception as e:
+            logger.error(f"Failed to save time capsule: {e}", exc_info=True)
+            raise
         return capsule
 
 

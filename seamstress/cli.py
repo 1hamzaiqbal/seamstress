@@ -261,6 +261,213 @@ def summarize(project: str, output: Path = typer.Option(Path("artifacts/time_cap
     console.print(Panel(summary, title=f"LLM Summary → {output}"))
 
 
+@app.command("add-work-block")
+def add_work_block(
+    project: str,
+    start: str = typer.Option(..., help="Start time (ISO format or HH:MM)"),
+    end: str = typer.Option(..., help="End time (ISO format or HH:MM)"),
+    focus_score: float = typer.Option(0.75, help="Focus score (0.0-1.0)"),
+) -> None:
+    """Manually add a work block for testing or manual tracking."""
+    from .data_models import WorkBlock
+    from .storage import save_state
+    
+    try:
+        # Try full ISO format first
+        try:
+            start_dt = datetime.fromisoformat(start)
+        except ValueError:
+            # Try HH:MM format, use today
+            today = datetime.now().date()
+            time_parts = start.split(":")
+            start_dt = datetime.combine(today, datetime.strptime(start, "%H:%M").time())
+        
+        try:
+            end_dt = datetime.fromisoformat(end)
+        except ValueError:
+            today = datetime.now().date()
+            time_parts = end.split(":")
+            end_dt = datetime.combine(today, datetime.strptime(end, "%H:%M").time())
+        
+        if end_dt <= start_dt:
+            console.print("[red]Error: End time must be after start time[/red]")
+            raise typer.Exit(code=1)
+        
+        if not 0.0 <= focus_score <= 1.0:
+            console.print("[red]Error: Focus score must be between 0.0 and 1.0[/red]")
+            raise typer.Exit(code=1)
+        
+        block = WorkBlock(
+            start=start_dt,
+            end=end_dt,
+            project=project,
+            focus_score=focus_score,
+        )
+        
+        state = load_state()
+        state.add_work_block(block)
+        save_state(state)
+        
+        duration = block.duration
+        console.print(
+            Panel.fit(
+                f"[green]✓[/green] Added work block\n"
+                f"Project: {project}\n"
+                f"Duration: {duration}\n"
+                f"Focus score: {focus_score:.2f}",
+                title="Work Block Added",
+                border_style="green",
+            )
+        )
+    except ValueError as e:
+        console.print(f"[red]Error parsing time: {e}[/red]")
+        console.print("Use ISO format (2025-11-13T10:00:00) or HH:MM (10:00)")
+        raise typer.Exit(code=1)
+
+
+@app.command("health-check")
+def health_check() -> None:
+    """Verify system state and configuration."""
+    import importlib.util
+    from rich.table import Table
+    
+    console.print("\n[bold cyan]Seamstress Health Check[/bold cyan]\n")
+    
+    # Check state file
+    state_path = Path.home() / ".seamstress" / "state.json"
+    config_path = Path.home() / ".seamstress" / "config.json"
+    
+    table = Table(title="System Status")
+    table.add_column("Component", style="cyan")
+    table.add_column("Status", style="white")
+    table.add_column("Details", style="dim")
+    
+    # State file
+    if state_path.exists():
+        try:
+            state = load_state()
+            table.add_row(
+                "State File",
+                "[green]✓ OK[/green]",
+                f"{len(state.projects)} projects, {len(state.work_blocks)} blocks, {len(state.time_capsules)} capsules"
+            )
+        except Exception as e:
+            table.add_row("State File", "[red]✗ ERROR[/red]", str(e))
+    else:
+        table.add_row("State File", "[yellow]⚠ Missing[/yellow]", "Run 'seamstress init' to create")
+    
+    # Config file
+    if config_path.exists():
+        cfg = _get_cfg()
+        table.add_row(
+            "Config File",
+            "[green]✓ OK[/green]",
+            f"{len(cfg)} settings"
+        )
+    else:
+        table.add_row("Config File", "[yellow]⚠ Missing[/yellow]", "Will be created when needed")
+    
+    # Dependencies
+    deps = {
+        "pynput": "Keyboard tracking",
+        "cv2": "Webcam focus detection",
+        "matplotlib": "Visualizations",
+        "streamlit": "GUI dashboard",
+        "ics": "ICS calendar parsing",
+    }
+    
+    for dep, description in deps.items():
+        if importlib.util.find_spec(dep):
+            table.add_row(dep, "[green]✓ Installed[/green]", description)
+        else:
+            table.add_row(dep, "[dim]○ Optional[/dim]", description)
+    
+    # Ollama
+    import shutil
+    if shutil.which("ollama"):
+        table.add_row("Ollama", "[green]✓ Available[/green]", "Local LLM support")
+    else:
+        table.add_row("Ollama", "[dim]○ Optional[/dim]", "Install from ollama.ai")
+    
+    # Thread definitions
+    threads_file = Path("data/threads.yaml")
+    if threads_file.exists():
+        table.add_row("Threads YAML", "[green]✓ Found[/green]", str(threads_file))
+    else:
+        table.add_row("Threads YAML", "[yellow]⚠ Missing[/yellow]", "Expected at data/threads.yaml")
+    
+    console.print(table)
+    console.print("\n[dim]Tip: Run 'seamstress init' to set up default configuration[/dim]\n")
+
+
+@app.command("setup")
+def interactive_setup() -> None:
+    """Interactive setup wizard for first-time users."""
+    console.print("\n[bold cyan]Welcome to Seamstress Setup![/bold cyan]\n")
+    
+    # Check if already initialized
+    state_path = Path.home() / ".seamstress" / "state.json"
+    if state_path.exists():
+        if not typer.confirm("State file already exists. Reinitialize?"):
+            console.print("[yellow]Setup cancelled.[/yellow]")
+            raise typer.Exit(code=0)
+    
+    # Initialize state
+    console.print("📦 Initializing state...")
+    board.register_default_goals()
+    threads_file = Path("data/threads.yaml")
+    if threads_file.exists():
+        board.initialize_board_from_yaml(threads_file)
+        console.print(f"   [green]✓[/green] Loaded threads from {threads_file}")
+    else:
+        console.print(f"   [yellow]⚠[/yellow] No threads.yaml found, using defaults")
+    
+    # Check for calendar
+    console.print("\n📅 Calendar Integration")
+    if typer.confirm("Do you have an ICS calendar file to import?", default=False):
+        ics_path = typer.prompt("Enter path to ICS file")
+        try:
+            expanded = Path(ics_path).expanduser()
+            if expanded.exists():
+                cfg = _get_cfg()
+                cfg["ics_path"] = str(expanded)
+                _set_cfg(cfg)
+                events = import_ics(expanded)
+                console.print(f"   [green]✓[/green] Registered {len(events)} events from {expanded}")
+            else:
+                console.print(f"   [red]✗[/red] File not found: {expanded}")
+        except Exception as e:
+            console.print(f"   [red]✗[/red] Error: {e}")
+    
+    # Check dependencies
+    console.print("\n🔧 Checking Dependencies")
+    import importlib.util
+    
+    missing = []
+    if not importlib.util.find_spec("pynput"):
+        missing.append("pynput (keyboard tracking)")
+    if not importlib.util.find_spec("cv2"):
+        missing.append("opencv-python (webcam focus)")
+    if not importlib.util.find_spec("matplotlib"):
+        missing.append("matplotlib (visualizations)")
+    
+    if missing:
+        console.print(f"   [yellow]⚠[/yellow] Optional dependencies missing:")
+        for dep in missing:
+            console.print(f"      • {dep}")
+        console.print("\n   Install with: pip install -e '.[viz,vision,gui]'")
+    else:
+        console.print("   [green]✓[/green] All optional dependencies installed")
+    
+    # Completion
+    console.print("\n[bold green]✓ Setup Complete![/bold green]\n")
+    console.print("Next steps:")
+    console.print("  • View your board: [cyan]seamstress board-view[/cyan]")
+    console.print("  • Plan your week: [cyan]seamstress plan --days 7[/cyan]")
+    console.print("  • Start a session: [cyan]seamstress focus 'Your Project'[/cyan]")
+    console.print("\n")
+
+
 def run() -> None:
     app()
 
