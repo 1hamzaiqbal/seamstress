@@ -154,8 +154,14 @@ Comprehensive documentation is available:
 # Install with all features
 pip install -e '.[viz,calendar,vision,gui]'
 
-# Initialize with sample data
+# Interactive setup wizard (recommended for first-time users)
+seamstress setup
+
+# OR initialize manually
 seamstress init
+
+# Verify system health
+seamstress health-check
 
 # View your board
 seamstress board-view
@@ -163,11 +169,11 @@ seamstress board-view
 # Generate a 7-day plan
 seamstress plan --days 7
 
-# Import a calendar
-seamstress calendar-import-ics data/samples/sample_calendar.ics
+# Add work blocks manually (great for testing!)
+seamstress add-work-block "Bayesian Project" --start "10:00" --end "12:00"
 
-# Visualize a day with events
-seamstress visualize-daily --start 2025-11-15T09:00
+# Visualize your week
+seamstress visualize --output artifacts/weekly_focus.png
 
 # Run a focus session (requires accessibility permissions)
 seamstress focus "Bayesian Project"
@@ -184,7 +190,7 @@ Run linting and unit tests (add your preferred tools; Pytest is recommended). A 
 python -m compileall seamstress
 ```
 
-### Current Status (v0.1.0)
+### Current Status (v0.1.0 - Updated Nov 13, 2025)
 
 ✅ **Working Features:**
 - Focus tracking (keyboard + webcam)
@@ -195,10 +201,22 @@ python -m compileall seamstress
 - Offline focus analysis
 - Local LLM summarization (Ollama)
 - Streamlit dashboard
+- **NEW:** Manual work block entry (`add-work-block`)
+- **NEW:** System health check (`health-check`)
+- **NEW:** Interactive setup wizard (`setup`)
+- **NEW:** Debug logging for troubleshooting
+
+✅ **Recently Fixed:**
+- Sample deadlines updated to 2025-2026
+- Weekly visualization tested with data
+- Work block persistence verified
+- All high-priority bugs resolved
 
 ⚠️ **Requires Setup:**
 - Google Calendar sync (needs OAuth)
 - Live focus sessions (needs macOS permissions)
+
+**Total Commands:** 16 (13 fully tested, 3 interactive)
 
 See [Status Summary](STATUS_SUMMARY.md) for detailed test results and [Roadmap](ROADMAP.md) for planned enhancements.
 

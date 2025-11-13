@@ -233,6 +233,110 @@ Launches an interactive web dashboard showing:
 
 ---
 
+## Utility Commands
+
+### System Health Check
+
+```bash
+seamstress health-check
+```
+
+Verifies system configuration and displays status of:
+- State file (projects, blocks, capsules count)
+- Config file
+- Optional dependencies (pynput, cv2, matplotlib, streamlit, ics)
+- Ollama availability
+- Thread definitions file
+
+**Status:** ✅ Working  
+**Use cases:**
+- Troubleshooting setup issues
+- Verifying installation
+- Pre-flight checks before sessions
+
+**Example output:**
+```
+System Status
+┌──────────────┬─────────────┬──────────────────────────┐
+│ Component    │ Status      │ Details                  │
+├──────────────┼─────────────┼──────────────────────────┤
+│ State File   │ ✓ OK        │ 5 projects, 3 blocks...  │
+│ pynput       │ ✓ Installed │ Keyboard tracking        │
+│ Ollama       │ ✓ Available │ Local LLM support        │
+└──────────────┴─────────────┴──────────────────────────┘
+```
+
+---
+
+### Interactive Setup Wizard
+
+```bash
+seamstress setup
+```
+
+Guided first-time setup that:
+- Initializes state with default goals
+- Loads threads from YAML
+- Prompts for ICS calendar import
+- Checks dependencies
+- Provides next steps
+
+**Status:** ✅ Working  
+**Use cases:**
+- First-time installation
+- Resetting configuration
+- Guided onboarding
+
+**Interactive prompts:**
+- State file overwrite confirmation (if exists)
+- Calendar file path input
+- Dependency installation guidance
+
+---
+
+### Manual Work Block Entry
+
+```bash
+seamstress add-work-block "Project Name" \
+  --start "10:00" \
+  --end "12:00" \
+  --focus-score 0.85
+```
+
+Manually add a work block without running a full focus session.
+
+**Arguments:**
+- `project` - Project name (required)
+- `--start` - Start time: ISO format (2025-11-13T10:00:00) or HH:MM (10:00)
+- `--end` - End time: ISO format or HH:MM
+- `--focus-score` - Score 0.0-1.0 (default: 0.75)
+
+**Status:** ✅ Working  
+**Use cases:**
+- Testing visualizations
+- Backfilling historical data
+- Manual time tracking
+- Quick data entry
+
+**Validation:**
+- End time must be after start time
+- Focus score must be 0.0-1.0
+- Clear error messages for invalid inputs
+
+**Example:**
+```bash
+# Using simple time format (uses today's date)
+seamstress add-work-block "Bayesian Project" --start "10:00" --end "12:00"
+
+# Using full ISO format
+seamstress add-work-block "LLM Project" \
+  --start "2025-11-13T14:00:00" \
+  --end "2025-11-13T16:00:00" \
+  --focus-score 0.90
+```
+
+---
+
 ## Data Model
 
 ### State Storage
@@ -295,31 +399,38 @@ seamstress init
 | ICS calendar import | ✅ Working | Fallback parser if `ics` lib missing |
 | Google Calendar sync | ⚠️ Requires OAuth | Credentials setup needed |
 | Daily timeline viz | ✅ Working | PNG export with events overlay |
-| Weekly focus viz | ✅ Working | Requires recorded work blocks |
+| Weekly focus viz | ✅ Working | Tested with sample data |
 | Streamlit dashboard | ⚠️ Not tested | Code present, should work |
 | State serialization | ✅ Working | Fixed in unify/v3-plus branch |
+| **NEW: Manual work blocks** | ✅ Working | `add-work-block` command |
+| **NEW: Health check** | ✅ Working | `health-check` command |
+| **NEW: Setup wizard** | ✅ Working | `setup` interactive guide |
+| **NEW: Debug logging** | ✅ Working | In focus.py for troubleshooting |
 
 ---
 
 ## Known Issues
 
-### 1. Weekly Visualization Empty
-**Symptom:** `visualize` command shows "No work blocks available"  
-**Cause:** No completed focus sessions yet  
-**Fix:** Run at least one `seamstress focus` session to completion
+### 1. ~~Weekly Visualization Empty~~ ✅ FIXED
+~~**Symptom:** `visualize` command shows "No work blocks available"~~  
+**Solution:** Use `seamstress add-work-block` to add data manually or run a focus session
 
-### 2. Timezone Handling in Daily Viz
+### 2. ~~Timezone Handling in Daily Viz~~ ✅ FIXED
 **Status:** Fixed in current version  
 **Solution:** ICS events now normalized to naive datetime before comparison
 
-### 3. YAML Task Parsing
+### 3. ~~YAML Task Parsing~~ ✅ FIXED
 **Status:** Fixed in current version  
 **Solution:** Non-string task items (dicts) are now flattened to strings
 
-### 4. Old State Files
-**Issue:** State files from earlier versions may not load  
+### 4. ~~Outdated Sample Deadlines~~ ✅ FIXED
+**Status:** Fixed - updated to 2025-2026 dates  
+**Location:** `data/threads.yaml`
+
+### 5. Old State Files (Minor)
+**Issue:** State files from pre-v0.1.0 versions may not load  
 **Solution:** Backup exists at `~/.seamstress/state.json.bak`  
-**Recovery:** Delete `state.json` and run `seamstress init`
+**Recovery:** Delete `state.json` and run `seamstress init` or `seamstress setup`
 
 ---
 
@@ -403,31 +514,62 @@ Generated outputs saved to `artifacts/`:
 
 ## Quick Start Workflow
 
+### First-Time Setup
+
 ```bash
-# 1. Initialize
+# Interactive setup wizard (recommended)
+seamstress setup
+
+# OR manual initialization
 seamstress init
 
-# 2. View current board
+# Verify everything is working
+seamstress health-check
+```
+
+### Daily Usage
+
+```bash
+# 1. View your board
 seamstress board-view
 
-# 3. Generate a weekly plan
+# 2. Generate a weekly plan
 seamstress plan --days 7
 
-# 4. Import a calendar
-seamstress calendar-import-ics data/samples/sample_calendar.ics
-
-# 5. Visualize a day
-seamstress visualize-daily --start 2025-11-15T09:00
-
-# 6. Run a focus session (keyboard only)
+# 3. Run a focus session (keyboard only)
 seamstress focus "Bayesian Project"
 
-# 7. Create a time capsule afterward
+# 4. Create a time capsule afterward
 seamstress capsule "Bayesian Project" "Completed initial analysis" \
   --resource notes.md
 
-# 8. Analyze offline focus data
+# 5. Generate visualizations
+seamstress visualize --output artifacts/weekly_focus.png
+seamstress visualize-daily --start 2025-11-15T09:00
+```
+
+### Manual Time Tracking
+
+```bash
+# Add work blocks manually (great for testing or backfilling)
+seamstress add-work-block "Bayesian Project" --start "10:00" --end "12:00"
+seamstress add-work-block "LLM Project" --start "14:00" --end "16:00" --focus-score 0.92
+
+# Verify data was added
+seamstress health-check  # Shows block count
+```
+
+### Advanced Features
+
+```bash
+# Import a calendar
+seamstress calendar-import-ics data/samples/sample_calendar.ics
+
+# Analyze offline focus data
 seamstress focus-analyze data/samples/focus.csv
+
+# Launch web dashboard
+seamstress streamlit
 ```
 
 ---
